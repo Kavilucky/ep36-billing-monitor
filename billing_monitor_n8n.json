@@ -1,0 +1,448 @@
+{
+  "name": "Контроль сроков: домены, SSL, платежи (эп. 36)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Контроль сроков: домены, SSL, платежи (эпизод 36)\n1. Положите assets.csv в папку файлов n8n (см. Инструкция.txt).\n2. Добавьте переменную NODE_FUNCTION_ALLOW_BUILTIN=tls.\n3. Создайте учётные данные Telegram (токен от BotFather) и впишите chat_id в узле «Остаток дней и уровень».\n4. Запустите вручную, затем включите workflow.\nДля зон .ru и .рф используйте kind=manual и due_date.",
+        "height": 260,
+        "width": 460
+      },
+      "id": "n-note",
+      "name": "Памятка",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -120,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "n-trigger",
+      "name": "Каждое утро в 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "/home/node/.n8n-files/assets.csv",
+        "options": {}
+      },
+      "id": "n-read",
+      "name": "Читаем assets.csv",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        220,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "csv",
+        "options": {}
+      },
+      "id": "n-csv",
+      "name": "CSV в строки",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        440,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "c-domain",
+                    "leftValue": "={{ $json.kind }}",
+                    "rightValue": "domain",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "domain"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "c-ssl",
+                    "leftValue": "={{ $json.kind }}",
+                    "rightValue": "ssl",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ssl"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "c-manual",
+                    "leftValue": "={{ $json.kind }}",
+                    "rightValue": "manual",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "manual"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "n-switch",
+      "name": "Разбор по типу",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        660,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://rdap.org/domain/' + String($json.name).trim() }}",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "n-rdap",
+      "name": "RDAP: запрос срока домена",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        -60
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Срок домена из ответа RDAP (события registration / expiration / last changed)\nconst row = $('Разбор по типу').item.json;\nconst events = Array.isArray($json.events) ? $json.events : [];\nconst ev = events.find(e => e.eventAction === 'expiration');\nreturn {\n  json: {\n    ...row,\n    expires: ev ? ev.eventDate : '',\n    check_error: ev ? '' : 'RDAP не вернул срок (зона может не поддерживаться, например .ru и .рф). Внесите дату вручную: kind=manual и due_date.'\n  }\n};"
+      },
+      "id": "n-rdap-code",
+      "name": "RDAP в дату",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        -60
+      ],
+      "notes": "Why Code: разбор массива событий RDAP и привязка к исходной строке таблицы."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Срок сертификата: TLS-рукопожатие. Нужна переменная окружения NODE_FUNCTION_ALLOW_BUILTIN=tls\nconst tls = require('tls');\nconst row = $json;\nconst host = String(row.name).trim();\nconst port = Number(row.port) || 443;\nconst expires = await new Promise((resolve) => {\n  const socket = tls.connect(\n    { host, port, servername: host, rejectUnauthorized: false, timeout: 10000 },\n    () => {\n      const cert = socket.getPeerCertificate();\n      socket.end();\n      resolve(cert && cert.valid_to ? new Date(cert.valid_to).toISOString() : '');\n    }\n  );\n  socket.on('error', () => resolve(''));\n  socket.on('timeout', () => { socket.destroy(); resolve(''); });\n});\nreturn {\n  json: {\n    ...row,\n    expires,\n    check_error: expires ? '' : 'Не удалось прочитать сертификат (хост недоступен с сервера n8n или не включён модуль tls).'\n  }\n};"
+      },
+      "id": "n-ssl",
+      "name": "SSL: срок сертификата",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        100
+      ],
+      "notes": "Why Code: TLS-рукопожатие недоступно ни одному штатному узлу n8n."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Платежи без публичного реестра (хостинг, лицензии, подписки): дата берётся из таблицы\nconst due = String($json.due_date || '').trim();\nconst ok = /^\\d{4}-\\d{2}-\\d{2}$/.test(due);\nreturn {\n  json: {\n    ...$json,\n    expires: ok ? new Date(due + 'T00:00:00Z').toISOString() : '',\n    check_error: ok ? '' : 'В колонке due_date нужна дата в формате ГГГГ-ММ-ДД.'\n  }\n};"
+      },
+      "id": "n-manual",
+      "name": "Дата из таблицы",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        260
+      ],
+      "notes": "Why Code: проверка формата даты и приведение к ISO."
+    },
+    {
+      "parameters": {
+        "numberInputs": 3
+      },
+      "id": "n-merge",
+      "name": "Собрать результаты",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        1340,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// НАСТРОЙКИ. Идентификаторы чатов вписывает пользователь (по умолчанию пусто).\nconst CHAT_MAIN = '';        // chat_id основного чата\nconst CHAT_ESCALATION = '';  // chat_id второго ответственного (можно оставить пустым)\n\nconst KIND = { domain: 'домен', ssl: 'SSL-сертификат', manual: 'платёж' };\nconst now = new Date();\nconst today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());\nconst out = [];\n\nfor (const item of $input.all()) {\n  const r = item.json;\n  const label = `${r.name} (${KIND[r.kind] || r.kind}, ${r.provider || 'провайдер не указан'})`;\n\n  if (!r.expires) {\n    out.push({ json: { ...r, days: null, level: 'error', chat_id: CHAT_MAIN,\n      message: `⚠️ Не удалось проверить: ${label}\\n${r.check_error || 'нет данных'}` } });\n    continue;\n  }\n\n  const d = new Date(r.expires);\n  const end = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());\n  const days = Math.round((end - today) / 86400000);\n  const dateStr = d.toISOString().slice(0, 10);\n  const sum = Number(r.amount_rub) > 0 ? `\\nСумма: ${r.amount_rub} ₽` : '';\n  const who = r.owner ? `\\nОтветственный: ${r.owner}` : '';\n  const tail = `${sum}${who}\\nДата окончания: ${dateStr}`;\n\n  let level = 'none';\n  let head = '';\n  if (days === 14) { level = 'info'; head = '🟡 Через 14 дней'; }\n  else if (days === 3) { level = 'warn'; head = '🟠 Через 3 дня'; }\n  else if (days === 1) { level = 'escalation'; head = '🔴 Осталось 24 часа'; }\n  else if (days === 0) { level = 'escalation'; head = '🔴 Сегодня последний день'; }\n  else if (days < 0) { level = 'escalation'; head = `🔴 Просрочено на ${-days} дн.`; }\n\n  const base = { ...r, days, level, message: `${head}: ${label}${tail}` };\n  out.push({ json: { ...base, chat_id: CHAT_MAIN } });\n  if (level === 'escalation' && CHAT_ESCALATION) {\n    out.push({ json: { ...base, chat_id: CHAT_ESCALATION, message: `ЭСКАЛАЦИЯ. ${base.message}` } });\n  }\n}\nreturn out;"
+      },
+      "id": "n-days",
+      "name": "Остаток дней и уровень",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        100
+      ],
+      "notes": "Why Code: расчёт календарных дней и сборка текста с эскалацией (второй получатель)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "f-thr",
+              "leftValue": "={{ [14, 3, 1, 0].includes($json.days) || $json.days < 0 || $json.level === 'error' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n-filter",
+      "name": "Пороги 14 / 3 / 1",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        1780,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "n-tg",
+      "name": "Telegram: алерт",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2000,
+        100
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "",
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Каждое утро в 09:00": {
+      "main": [
+        [
+          {
+            "node": "Читаем assets.csv",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Читаем assets.csv": {
+      "main": [
+        [
+          {
+            "node": "CSV в строки",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CSV в строки": {
+      "main": [
+        [
+          {
+            "node": "Разбор по типу",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Разбор по типу": {
+      "main": [
+        [
+          {
+            "node": "RDAP: запрос срока домена",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SSL: срок сертификата",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Дата из таблицы",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RDAP: запрос срока домена": {
+      "main": [
+        [
+          {
+            "node": "RDAP в дату",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RDAP в дату": {
+      "main": [
+        [
+          {
+            "node": "Собрать результаты",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SSL: срок сертификата": {
+      "main": [
+        [
+          {
+            "node": "Собрать результаты",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Дата из таблицы": {
+      "main": [
+        [
+          {
+            "node": "Собрать результаты",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Собрать результаты": {
+      "main": [
+        [
+          {
+            "node": "Остаток дней и уровень",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Остаток дней и уровень": {
+      "main": [
+        [
+          {
+            "node": "Пороги 14 / 3 / 1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Пороги 14 / 3 / 1": {
+      "main": [
+        [
+          {
+            "node": "Telegram: алерт",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}
